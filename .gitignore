@@ -20,3 +20,9 @@ core/deps/glslang/
 .cache/
 compile_commands.json
 CMakeUserPresets.json
+
+# Katana dev-kit build artifacts, run-time logs (keep the .bat scripts, drop output)
+/build-devkit/
+/flycast.log
+/_build_out.txt
+/_devkit_build.log
