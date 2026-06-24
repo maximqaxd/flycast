@@ -21,11 +21,44 @@
 #include "emulator.h"
 #include "hw/sh4/sh4_if.h"
 #include "hw/sh4/sh4_mem.h"
+#include "hw/sh4/modules/mmu.h"
 #include "hw/sh4/dyna/shil.h"
 #include "cfg/option.h"
 #include <array>
 #include <signal.h>
 #include <map>
+
+// ---------------------------------------------------------------------------
+// MMU-aware memory access for the debugger.
+// WinCE runs user code (e.g. the game exe) in the paged P0/U0 region, whose
+// virtual addresses must be resolved through the software-managed TLB. The
+// plain _nommu accessors only work for the direct-mapped P1/P2 kernel windows
+// (and when the MMU is off), so translate VA->PA first for paged addresses.
+// Returns false if the page is not currently mapped (caller skips the access).
+// ---------------------------------------------------------------------------
+static inline bool dbgTranslate(u32 va, u32& pa)
+{
+	// P1 (0x8xxxxxxx) / P2 (0xAxxxxxxx) are untranslated windows onto physical
+	// memory that the _nommu accessors decode directly; same when MMU is off.
+	if (!mmu_enabled() || va >= 0x80000000)
+	{
+		pa = va;
+		return true;
+	}
+	// P0/U0: paged. Resolve through the UTLB (lookup only, no protection check
+	// so we can also read/patch read-only code pages).
+	const TLB_Entry *entry;
+	if (mmu_full_lookup(va, &entry, pa) != MmuError::NONE)
+		return false;
+	return true;
+}
+
+static inline u32 dbgRead32(u32 va) { u32 pa; return dbgTranslate(va, pa) ? ReadMem32_nommu(pa) : 0; }
+static inline u16 dbgRead16(u32 va) { u32 pa; return dbgTranslate(va, pa) ? ReadMem16_nommu(pa) : 0; }
+static inline u8  dbgRead8 (u32 va) { u32 pa; return dbgTranslate(va, pa) ? ReadMem8_nommu(pa)  : 0; }
+static inline void dbgWrite32(u32 va, u32 v) { u32 pa; if (dbgTranslate(va, pa)) WriteMem32_nommu(pa, v); }
+static inline void dbgWrite16(u32 va, u16 v) { u32 pa; if (dbgTranslate(va, pa)) WriteMem16_nommu(pa, v); }
+static inline void dbgWrite8 (u32 va, u8  v) { u32 pa; if (dbgTranslate(va, pa)) WriteMem8_nommu(pa, v); }
 
 #ifndef SIGTRAP
 #define SIGTRAP 5
@@ -168,21 +201,21 @@ public:
 		{
 			if (len >= 4 && (addr & 3) == 0)
 			{
-				*(u32 *)p = ReadMem32_nommu(addr);
+				*(u32 *)p = dbgRead32(addr);
 				addr += 4;
 				len -= 4;
 				p += 4;
 			}
 			else if (len >= 2 && (addr & 1) == 0)
 			{
-				*(u16 *)p = ReadMem16_nommu(addr);
+				*(u16 *)p = dbgRead16(addr);
 				addr += 2;
 				len -= 2;
 				p += 2;
 			}
 			else
 			{
-				*p++ = ReadMem8_nommu(addr);
+				*p++ = dbgRead8(addr);
 				addr++;
 				len--;
 			}
@@ -197,21 +230,21 @@ public:
 		{
 			if (len >= 4 && (addr & 3) == 0)
 			{
-				WriteMem32_nommu(addr, *(u32 *)p);
+				dbgWrite32(addr, *(u32 *)p);
 				addr += 4;
 				len -= 4;
 				p += 4;
 			}
 			else if (len >= 2 && (addr & 3) == 0)
 			{
-				WriteMem16_nommu(addr, *(u16 *)p);
+				dbgWrite16(addr, *(u16 *)p);
 				addr += 2;
 				len -= 2;
 				p += 2;
 			}
 			else
 			{
-				WriteMem8_nommu(addr, *p++);
+				dbgWrite8(addr, *p++);
 				addr++;
 				len--;
 			}
@@ -227,8 +260,11 @@ public:
 		if (breakpoints[type].find(addr) != breakpoints[type].end())
 			return true;
 		breakpoints[type][addr] = Breakpoint(type, addr);
-		breakpoints[type][addr].savedOp = ReadMem16_nommu(addr);
-		WriteMem16_nommu(addr, 0xC308);	// trapa #0x20
+		breakpoints[type][addr].savedOp = dbgRead16(addr);
+		dbgWrite16(addr, 0xC308);	// trapa #0x20
+		// The exe runs from dynarec-cached blocks; drop the cache so the patched
+		// trapa is picked up instead of a stale translation.
+		emu.getSh4Executor()->ResetCache();
 		return true;
 	}
 	bool removeMatchpoint(Breakpoint::Type type, u32 addr, u32 len)
@@ -240,7 +276,8 @@ public:
 		auto it = breakpoints[type].find(addr);
 		if (it == breakpoints[type].end())
 			return false;
-		WriteMem16_nommu(addr, it->second.savedOp);
+		dbgWrite16(addr, it->second.savedOp);
+		emu.getSh4Executor()->ResetCache();
 		breakpoints[type].erase(it);
 		return true;
 	}

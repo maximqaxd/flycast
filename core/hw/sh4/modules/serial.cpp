@@ -543,6 +543,115 @@ void setupPtyPipe()
 	}
 }
 
+#ifdef _WIN32
+// Bridges the SCIF to a host COM port (e.g. one end of a com0com virtual
+// null-modem pair) so an external debugger (windbg serial KD transport) can
+// attach on the other end and exchange the bidirectional KD/KITL protocol
+// with the running WinCE kernel. Opt-in via env var FLYCAST_SERIAL_COM, e.g.
+// FLYCAST_SERIAL_COM=COM5  (Flycast opens COM5, windbg opens its com0com peer).
+struct ComPortPipe : public SerialPort::Pipe
+{
+	void write(u8 data) override
+	{
+		if (handle == INVALID_HANDLE_VALUE)
+			return;
+		DWORD n = 0;
+		WriteFile(handle, &data, 1, &n, nullptr);
+	}
+
+	int available() override
+	{
+		if (handle == INVALID_HANDLE_VALUE)
+			return 0;
+		COMSTAT st;
+		DWORD errs = 0;
+		if (!ClearCommError(handle, &errs, &st))
+			return 0;
+		return (int)st.cbInQue;
+	}
+
+	u8 read() override
+	{
+		if (handle == INVALID_HANDLE_VALUE)
+			return 0;
+		u8 data = 0;
+		DWORD n = 0;
+		ReadFile(handle, &data, 1, &n, nullptr);	// non-blocking (see timeouts)
+		return data;
+	}
+
+	bool open(const std::string& name)
+	{
+		std::string dev = name.compare(0, 4, "\\\\.\\") == 0 ? name : ("\\\\.\\" + name);
+		handle = CreateFileA(dev.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+				OPEN_EXISTING, 0, nullptr);
+		if (handle == INVALID_HANDLE_VALUE)
+		{
+			ERROR_LOG(BOOT, "SCIF: cannot open serial port %s (error %lu)", dev.c_str(), (unsigned long)GetLastError());
+			return false;
+		}
+		DCB dcb{};
+		dcb.DCBlength = sizeof(dcb);
+		GetCommState(handle, &dcb);
+		dcb.BaudRate = CBR_115200;
+		dcb.ByteSize = 8;
+		dcb.Parity = NOPARITY;
+		dcb.StopBits = ONESTOPBIT;
+		dcb.fBinary = TRUE;
+		dcb.fParity = FALSE;
+		dcb.fOutxCtsFlow = FALSE;
+		dcb.fOutxDsrFlow = FALSE;
+		dcb.fDtrControl = DTR_CONTROL_ENABLE;
+		dcb.fRtsControl = RTS_CONTROL_ENABLE;
+		dcb.fInX = FALSE;
+		dcb.fOutX = FALSE;
+		SetCommState(handle, &dcb);
+		COMMTIMEOUTS to{};
+		to.ReadIntervalTimeout = MAXDWORD;		// return immediately with whatever's there
+		to.ReadTotalTimeoutConstant = 0;
+		to.ReadTotalTimeoutMultiplier = 0;
+		to.WriteTotalTimeoutConstant = 0;
+		to.WriteTotalTimeoutMultiplier = 0;
+		SetCommTimeouts(handle, &to);
+		PurgeComm(handle, PURGE_RXCLEAR | PURGE_TXCLEAR);
+		NOTICE_LOG(BOOT, "SCIF: bridged to host serial port %s @115200 8N1", dev.c_str());
+		return true;
+	}
+
+	void close()
+	{
+		if (handle != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(handle);
+			handle = INVALID_HANDLE_VALUE;
+		}
+		SCIFSerialPort::Instance().setPipe(nullptr);
+	}
+
+	HANDLE handle = INVALID_HANDLE_VALUE;
+};
+
+void setupComPipe()
+{
+	static ComPortPipe comPipe;
+	const char *port = getenv("FLYCAST_SERIAL_COM");
+	if (port != nullptr && port[0] != '\0')
+	{
+		if (SCIFSerialPort::Instance().getPipe() == nullptr)
+		{
+			if (comPipe.open(port))
+				SCIFSerialPort::Instance().setPipe(&comPipe);
+		}
+	}
+	else if (SCIFSerialPort::Instance().getPipe() == &comPipe)
+	{
+		comPipe.close();
+	}
+}
+#else
+void setupComPipe() {}
+#endif
+
 template <typename T>
 class SingletonForward {
 

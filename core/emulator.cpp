@@ -37,6 +37,7 @@
 #include "network/ggpo.h"
 #include "network/ice.h"
 #include "hw/mem/mem_watch.h"
+#include "hw/devkit/katana_da.h"
 #include "network/net_handshake.h"
 #include "network/naomi_network.h"
 #include "serialize.h"
@@ -520,6 +521,12 @@ void Emulator::init()
 	interpreter = Get_Sh4Interpreter();
 	interpreter->Init();
 	state = Init;
+
+	// Dev Kit mode: expose a virtual Katana KATANA_DA debug adapter over the
+	// iMekugi ASPI-over-TCP tunnel. Opt-in via the FLYCAST_DEVKIT env var until
+	// a proper UI/config option exists.
+	if (getenv("FLYCAST_DEVKIT") != nullptr)
+		katana_da::start();
 }
 
 Sh4Executor *Emulator::getSh4Executor()
@@ -769,6 +776,7 @@ void Emulator::unloadGame()
 
 void Emulator::term()
 {
+	katana_da::stop();
 	unloadGame();
 	if (state == Init)
 	{
@@ -989,6 +997,7 @@ void Emulator::start()
 	if (config::GGPOEnable && config::ThreadedRendering)
 		// Not supported with GGPO
 		config::EmulateFramebuffer.override(false);
+	setupComPipe();		// host COM-port bridge (FLYCAST_SERIAL_COM) takes priority if set
 	setupPtyPipe();
 
 	memwatch::protect();

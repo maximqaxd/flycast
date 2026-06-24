@@ -4,6 +4,7 @@ target_sources(${PROJECT_NAME} PRIVATE
 add_subdirectory(aica)
 add_subdirectory(arm7)
 add_subdirectory(bba)
+add_subdirectory(devkit)
 add_subdirectory(flashrom)
 add_subdirectory(gdrom)
 add_subdirectory(holly)

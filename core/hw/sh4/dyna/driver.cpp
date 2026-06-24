@@ -12,6 +12,7 @@
 #include "ngen.h"
 #include "decoder.h"
 #include "oslib/virtmem.h"
+#include "hw/devkit/katana_da.h"
 
 #if FEAT_SHREC != DYNAREC_NONE
 
@@ -198,6 +199,13 @@ DynarecCodeEntryPtr DYNACALL rdv_FailedToFindBlock_pc()
 DynarecCodeEntryPtr DYNACALL rdv_FailedToFindBlock(u32 pc)
 {
 	//DEBUG_LOG(DYNAREC, "rdv_FailedToFindBlock %08x", pc);
+	// Dev-kit ASE-BIOS vectors (0x.C004000/0x.C008000) are unmapped here; service
+	// the DA channel directly. handleAseKfunc sets Sh4cntx.pc to the caller's
+	// return address; return the block for it via the normal lookup (it's
+	// usually already compiled, since the kernel polls the BIOS in a loop) so we
+	// don't force a duplicate compile (which trips bm_AddBlock's assert).
+	if (katana_da::handleAseKfunc(pc))
+		return bm_GetCodeByVAddr(Sh4cntx.pc);
 	Sh4cntx.pc=pc;
 	DynarecCodeEntryPtr code = compilePC(0);
 	if (code == NULL)

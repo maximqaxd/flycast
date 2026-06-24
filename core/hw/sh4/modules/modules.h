@@ -159,3 +159,4 @@ private:
 };
 
 void setupPtyPipe();
+void setupComPipe();	// bridge SCIF to a host COM port (FLYCAST_SERIAL_COM) for windbg KD
