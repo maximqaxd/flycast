@@ -21,6 +21,7 @@
 #include "hw/holly/holly_intc.h"
 #include "network/netservice.h"
 #include "serialize.h"
+#include "hw/w5500/w5500.h"
 
 static RTL8139State *rtl8139device;
 
@@ -215,6 +216,9 @@ ssize_t qemu_send_packet(RTL8139State *s, const uint8_t *buf, int size)
 
 int bba_recv_frame(const u8 *data, u32 len)
 {
+	if (w5500_active())
+		return w5500_rx_frame(data, (int)len);   // route host->DC to the W5500 instead
+
 	if (!rtl8139_can_receive(rtl8139device))
 		return 0;
 	rtl8139_receive(rtl8139device, data, len);

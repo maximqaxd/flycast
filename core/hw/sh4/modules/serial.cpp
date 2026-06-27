@@ -18,6 +18,7 @@
 #include "modules.h"
 #include "hw/sh4/sh4_sched.h"
 #include "serialize.h"
+#include "hw/w5500/w5500.h"
 
 //#define DEBUG_SCIF
 
@@ -746,6 +747,38 @@ void SCIFRegisters::term()
 	super::term();
 }
 
+// ---- W5500 SPI bridge (SCI clocked-synchronous mode) ---------------------------
+// The DC's dcspi driver shifts bytes LSB-first (SCI sync mode), so it bit-reverses
+// to put MSB-first on the "wire"; we reverse back to feed the W5500, and reverse the
+// response. The transmitter is instantly ready (TDRE/TEND), and a response byte is
+// "received" (RDRF) as soon as one is shifted out.
+static u8 sci_bitrev8(u8 b)
+{
+	b = (u8)(((b & 0xf0) >> 4) | ((b & 0x0f) << 4));
+	b = (u8)(((b & 0xcc) >> 2) | ((b & 0x33) << 2));
+	b = (u8)(((b & 0xaa) >> 1) | ((b & 0x55) << 1));
+	return b;
+}
+static bool sciRxPending;
+
+static void SCI_SCTDR1_write(u32 addr, u8 data)
+{
+	if (SCI_SCSMR1 & 0x80) {               // synchronous (SPI) mode
+		SCI_SCRDR1 = sci_bitrev8(w5500_spi_byte(sci_bitrev8(data)));
+		sciRxPending = true;
+	}
+	else
+		SCI_SCTDR1 = data;
+}
+static u8 SCI_SCSSR1_read(u32 addr)
+{
+	if (SCI_SCSMR1 & 0x80)
+		return (u8)(0x84 | (sciRxPending ? 0x40 : 0));   // TDRE|TEND always; RDRF if byte ready
+	return SCI_SCSSR1;
+}
+static void SCI_SCSSR1_write(u32 addr, u8 data) { SCI_SCSSR1 = data & 0xf9; }
+static u8 SCI_SCRDR1_read(u32 addr) { sciRxPending = false; return SCI_SCRDR1; }
+
 void SCIRegisters::init()
 {
 	super::init();
@@ -754,10 +787,21 @@ void SCIRegisters::init()
 	setRW<SCI_SCSMR1_addr, u8>();
 	setRW<SCI_SCBRR1_addr, u8>();
 	setRW<SCI_SCSCR1_addr, u8>();
-	setRW<SCI_SCTDR1_addr, u8>();
-	setRW<SCI_SCSSR1_addr, u8, 0xf9>();
-	setReadOnly<SCI_SCRDR1_addr, u8>();
 	setRW<SCI_SCSPTR1_addr, u8, 0x8f>();
+
+	if (w5500_active())
+	{
+		// Route the SCI through the W5500 SPI device.
+		setWriteHandler<SCI_SCTDR1_addr, u8>(SCI_SCTDR1_write);
+		setHandlers<SCI_SCSSR1_addr>(SCI_SCSSR1_read, SCI_SCSSR1_write);
+		setReadOnly<SCI_SCRDR1_addr>(SCI_SCRDR1_read);
+	}
+	else
+	{
+		setRW<SCI_SCTDR1_addr, u8>();
+		setRW<SCI_SCSSR1_addr, u8, 0xf9>();
+		setReadOnly<SCI_SCRDR1_addr, u8>();
+	}
 
 	reset();
 }
@@ -769,4 +813,6 @@ void SCIRegisters::reset()
 	SCI_SCBRR1 = 0xff;
 	SCI_SCTDR1 = 0xff;
 	SCI_SCSSR1 = 0x84;
+	if (w5500_active())
+		w5500_reset();
 }

@@ -52,6 +52,7 @@ extern "C" {
 #include "util/tsqueue.h"
 #include "util/shared_this.h"
 #include "hw/bba/bba.h"
+#include "hw/w5500/w5500.h"
 
 #include <unordered_map>
 #include <mutex>
@@ -1313,8 +1314,8 @@ void PicoThread::run()
 
 	pico_stack_init();
 
-	// Create ppp/eth device
-	usingPPP = !config::EmulateBBA;
+	// Create ppp/eth device (W5500/MACRAW needs the ethernet device, like the BBA)
+	usingPPP = !config::EmulateBBA && !w5500_active();
 	u32 addr;
 	if (usingPPP)
 	{
