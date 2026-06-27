@@ -6,6 +6,7 @@
 #include "hw/naomi/naomi.h"
 #include "cfg/option.h"
 #include "modules.h"
+#include "hw/w5500/w5500.h"
 
 BSCRegisters bsc;
 
@@ -19,6 +20,8 @@ static void write_BSC_PDTRA_arcade(u32 addr, u16 data)
 static void write_BSC_PDTRA(u32 addr, u16 data)
 {
 	BSC_PDTRA.full = data;
+	if (w5500_active())
+		w5500_spi_cs((data & 0x80) == 0);   // W5500 CS on PA7, active-low
 }
 
 static u16 read_BSC_PDTRA_arcade(u32 addr)
